@@ -60,6 +60,65 @@ main(int argc, char *argv[])
 void
 memdump(char *fmt, char *data)
 {
-  // Your code here.
+  // 用局部指针 p 遍历 data，根据 fmt 中的格式字符决定如何解释内存
+  char* p = data;
+
+  for (int i = 0; fmt[i]; i++) {
+    switch (fmt[i]) {
+      case 'i':
+        // i: 接下来 4 字节作为 32 位有符号整数，十进制输出
+        printf("%d\n", *(int*)p);
+        p += 4;
+        break;
+
+      case 'p': {
+        // p: 接下来 8 字节作为 64 位整数，十六进制输出
+        uint64 v = *(uint64*)p;
+        int started = 0;
+        
+        // 从最高位（第60位）到最低位，每4位一个十六进制数字
+        for (int j = 28; j >= 0; j -= 4) {
+          int digit = (v >> j) & 0xF;
+          // 跳过前导零，但至少输出一位（当值为0时）
+          if (digit || started || j == 0) {
+            started = 1;
+            if (digit < 10)
+              printf("%c", '0' + digit);
+            else
+              printf("%c", 'A' + digit - 10);
+          }
+        }
+        printf("\n");
+        p += 8;
+        break;
+      }
+
+      case 'h':
+        // h: 接下来 2 字节作为 16 位有符号整数，十进制输出
+        printf("%d\n", *(short*)p);
+        p += 2;
+        break;
+
+      case 'c':
+        // c: 接下来 1 字节作为 ASCII 字符输出
+        printf("%c\n", *p);
+        p += 1;
+        break;
+
+      case 's':
+        // s: 接下来 8 字节是一个指向 C 字符串的 64 位指针，打印该字符串
+        printf("%s\n", *(char**)p);
+        p += 8;
+        break;
+
+      case 'S':
+        // S: 剩余所有数据视为以 \0 结尾的 C 字符串输出
+        printf("%s\n", p);
+        return;  
+
+      default:
+        break;
+    }
+  }
 
 }

@@ -69,7 +69,7 @@ void find(char* path, char* target,int exec_mode,char*cmd,char**cmd_args,int cmd
     }
 
     // 文件名匹配
-    if (strcmp(de.name, target) == 0) {
+    if (strcmp(de.name, target) == 0&&st.type!=T_DIR) {
       if(exec_mode){
         char *new_argv[MAXARG];
         int i;

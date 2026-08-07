@@ -76,7 +76,7 @@ memdump(char *fmt, char *data)
         uint64 v = *(uint64*)p;
         int started = 0;
         
-        // 从最高位（第60位）到最低位，每4位一个十六进制数字
+        // 从最高位到最低位，每4位一个十六进制数字
         for (int j = 28; j >= 0; j -= 4) {
           int digit = (v >> j) & 0xF;
           // 跳过前导零，但至少输出一位（当值为0时）

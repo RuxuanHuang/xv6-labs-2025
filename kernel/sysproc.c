@@ -105,3 +105,20 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_interpose(void)
+{
+  int  mask;
+
+  //从寄存器读取参数
+  argint(0, &mask);
+
+  //将mask传入当前struct proc
+  myproc()->mask = mask;
+
+  //从寄存器读取路径参数，并存入proc结构体
+  argstr(1, myproc()->allowpath, MAXPATH);
+  return 0;
+
+}

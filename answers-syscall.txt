@@ -1,0 +1,6 @@
+usertrap
+0xf;system call number
+user mode
+lw	a3,0(zero);a3
+(1) The kernel crashes because it tries to load data from virtual address zero, but this address hasn't been mapped to the physical memory. (2) No, address 0 hasn't been mapped in the kernel address space. (3) Yes，the scause is 0xd, which refers to a load-page-fault, which matches the conclusion in last question.
+init;1

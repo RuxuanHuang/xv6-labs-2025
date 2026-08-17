@@ -142,9 +142,10 @@ walkaddr(pagetable_t pagetable, uint64 va)
 
 
 #if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
-void
-vmprint(pagetable_t pagetable) {
-  // your code here
+void vmprintwalk(pagetable_t pagetable, int level, uint64 va);
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprintwalk(pagetable, 2, 0);
 }
 #endif
 
@@ -310,6 +311,7 @@ freewalk(pagetable_t pagetable)
   kfree((void*)pagetable);
 }
 
+
 // Free user memory pages,
 // then free page-table pages.
 void
@@ -319,6 +321,35 @@ uvmfree(pagetable_t pagetable, uint64 sz)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
   freewalk(pagetable);
 }
+
+//递归打印页表
+//level:2=根，1=中间，0=叶子层
+//va:累计虚拟地址
+void vmprintwalk(pagetable_t pagetable, int level, uint64 va)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) == 0) {
+      continue;
+    }
+
+    //本级索引i贡献到va的位移
+    uint64 child_va = va | ((uint64)i << (PGSHIFT + 9 * level));
+
+    //输出缩进
+    for (int j = 0; j < 3 - level; j++) {
+      printf(" ..");
+    }
+
+    printf("%p: pte %p pa %p\n", (void*)child_va, (void*)pte, (void*)PTE2PA(pte));
+
+    //中间节点，递归
+    if ((pte & (PTE_R | PTE_W | PTE_X)) == 0 && level > 0) {
+      vmprintwalk((pagetable_t)PTE2PA(pte), level - 1, child_va);
+    }
+  }
+}
+
 
 // Given a parent process's page table, copy
 // its memory into a child's page table.

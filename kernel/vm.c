@@ -117,6 +117,30 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
   return &pagetable[PX(0, va)];
 }
 
+// 类似walk(),但停在L1并返回L1 PTE指针
+pte_t*
+walksuper(pagetable_t pagetable, uint64 va, int alloc)
+{
+  if (va >= MAXVA)
+    panic("walksuper");
+
+  for (int level = 2; level > 1; level--) {
+    pte_t* pte = &pagetable[PX(level, va)];
+    if (*pte & PTE_V) {
+      pagetable = (pagetable_t)PTE2PA(*pte);  //进入下一级
+    }
+    else {  //当前级页表不存在
+      if (!alloc || (pagetable = (pde_t*)kalloc()) == 0)
+        return 0;
+      memset(pagetable, 0, PGSIZE);
+      *pte = PA2PTE(pagetable) | PTE_V;
+    }
+  }
+  return &pagetable[PX(1, va)]; //返回L1级PTE地址
+}
+
+
+
 // Look up a virtual address, return the physical address,
 // or 0 if not mapped.
 // Can only be used to look up user pages.
@@ -224,11 +248,37 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += sz){
+    //先检查L1 PTE判断是否superpage
+    pte_t* pte_super = walksuper(pagetable, a, 0);
+    if (pte_super && (*pte_super & PTE_V) && (*pte_super & PTE_R)) {
+      if (a % SUPERPGSIZE == 0 && a + SUPERPGSIZE <= va + npages * PGSIZE) {
+        //整页都在范围，直接superfree
+        sz = SUPERPGSIZE;
+        superfree((void*)PTE2PA(*pte_super));
+        *pte_super = 0;
+        continue;
+      }
+      else {
+        //部分释放，降级为普通页
+        uint64 spa = PTE2PA(*pte_super); //取超级页物理起始地址
+        uint sfl = PTE_FLAGS(*pte_super); //取超级页的权限
+
+        //新的L0叶子页表
+        pagetable_t l0 = kalloc();
+        memset(l0, 0, PGSIZE);
+        for (int i = 0; i < 512; i++) {
+          l0[i] = PA2PTE(spa + i * PGSIZE) | sfl | PTE_V;
+        }
+        //原来的L1 PTE变成中间页表项，指向L0
+        *pte_super = PA2PTE((uint64)l0) | PTE_V;
+      }
+    }
+    sz = PGSIZE;
     if((pte = walk(pagetable, a, 0)) == 0) // leaf page table entry allocated?
       continue;
     if((*pte & PTE_V) == 0)  // has physical page been allocated?
       continue;
-    sz = PGSIZE;
+    
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -367,16 +417,36 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   int szinc = PGSIZE;
 
   for(i = 0; i < sz; i += szinc){
+    pte_t* pte_super = walksuper(old, i, 0);
+    if (pte_super && (*pte_super & PTE_V) && (*pte_super & PTE_R)) {
+      //是superpage
+      szinc = SUPERPGSIZE;
+      pa = PTE2PA(*pte_super);
+      flags = PTE_FLAGS(*pte_super); //权限位
+      if ((mem = superalloc()) == 0) {
+        goto err;
+      }
+      memmove(mem, (char*)pa, SUPERPGSIZE);
+      pte_t* npte = walksuper(new, i, 1);//子进程页表找到对应L1 PTE
+      if (npte == 0) {
+        superfree(mem);
+        goto err;
+      }
+      *npte = PA2PTE(mem) | flags | PTE_V;    //子进程L1写入超级页PTE
+      continue;
+    }
+    szinc = PGSIZE;
     if((pte = walk(old, i, 0)) == 0)
       continue;
     if((*pte & PTE_V) == 0) {
       continue;
     }
-    szinc = PGSIZE;
+    
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    if ((mem = kalloc()) == 0) {
       goto err;
+    }
     memmove(mem, (char*)pa, PGSIZE);
     if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
       kfree(mem);
@@ -385,7 +455,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   }
   return 0;
 
- err:
+err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }

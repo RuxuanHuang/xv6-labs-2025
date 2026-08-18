@@ -262,13 +262,41 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
-      return -1;
+    //向上对齐到4KB
+    uint64 newsz = PGROUNDUP(sz + n);
+    for (uint a = sz; a < newsz;) {
+      //判断能够使用superpage
+      if (a%SUPERPGSIZE==0&&a+SUPERPGSIZE<=newsz) {
+        
+        char* pa = superalloc();
+        if (!pa) {
+          return -1;
+        }
+        memset(pa, 0, SUPERPGSIZE);
+        //在L1 PTE上写V+W+U+R
+        *walksuper(p->pagetable, a, 1) = PA2PTE(pa) | PTE_W | PTE_V | PTE_R | PTE_U;
+        a += SUPERPGSIZE;
+      }
+      else {
+        //用普通4KB页
+        char* mem = kalloc();
+        if (!mem) {
+          return -1;
+        }
+        memset(mem, 0, PGSIZE);
+        if (mappages(p->pagetable, a, PGSIZE, (uint64)mem, PTE_W | PTE_V | PTE_R | PTE_U) != 0) {
+          kfree(mem);
+          return -1;
+        }
+        a += PGSIZE;
+      }
+      p->sz = newsz;
     }
   } else if(n < 0){
+    //交由uvmdealloc处理
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    p->sz = sz;
   }
-  p->sz = sz;
   return 0;
 }
 

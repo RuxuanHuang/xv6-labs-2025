@@ -23,11 +23,36 @@ struct {
   struct run *freelist;
 } kmem;
 
+struct {
+  struct spinlock lock;
+  struct run* freelist;
+} kmemsuper;
+
+#define NSUPER 16
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  initlock(&kmemsuper.lock, "kmemsuper");
+
+  //内核代码end向上对齐到4KB
+  uint64 s = PGROUNDUP((uint64)end);
+  //向上对齐到2MB边界
+  uint64 ss = SUPERPGROUNDUP(s);
+
+  //s与ss之间的给普通池
+  freerange((char*)s, (char*)ss);
+
+  //从ss开始切，NSUPER块
+  for (int i = 0; i < NSUPER; i++) {
+    struct run* r = (struct run*)(ss + i * SUPERPGSIZE);
+    r->next = kmemsuper.freelist;
+    kmemsuper.freelist = r;
+  }
+
+  //剩余的给普通池
+  freerange((char*)(ss + NSUPER * SUPERPGSIZE), (char*)PHYSTOP);
 }
 
 void
@@ -79,4 +104,40 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+//从超级页池分配一块2MB内存，返回物理地址
+void* 
+superalloc(void) {
+  struct run* r;
+  
+  acquire(&kmemsuper.lock);
+  r = kmemsuper.freelist;
+  if (r)
+    kmemsuper.freelist = r->next;
+  release(&kmemsuper.lock);
+
+  if (r)
+    memset((char*)r, 5, SUPERPGSIZE); // fill with junk
+  return (void*)r;
+}
+
+//释放一块2MB内存
+void
+superfree(void* pa)
+{
+  struct run* r;
+
+  if (((uint64)pa % SUPERPGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("superfree");
+
+  // Fill with junk to catch dangling refs.
+  memset(pa, 1, SUPERPGSIZE);
+
+  r = (struct run*)pa;
+
+  acquire(&kmemsuper.lock);
+  r->next = kmemsuper.freelist;
+  kmemsuper.freelist = r;
+  release(&kmemsuper.lock);
 }

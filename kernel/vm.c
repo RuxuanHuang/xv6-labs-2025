@@ -134,6 +134,7 @@ walksuper(pagetable_t pagetable, uint64 va, int alloc)
         return 0;
       memset(pagetable, 0, PGSIZE);
       *pte = PA2PTE(pagetable) | PTE_V;
+      pagetable = (pagetable_t)PTE2PA(*pte);  //进入下一级
     }
   }
   return &pagetable[PX(1, va)]; //返回L1级PTE地址
@@ -393,7 +394,7 @@ void vmprintwalk(pagetable_t pagetable, int level, uint64 va)
 
     printf("%p: pte %p pa %p\n", (void*)child_va, (void*)pte, (void*)PTE2PA(pte));
 
-    //中间节点，递归
+    //非叶子节点，递归
     if ((pte & (PTE_R | PTE_W | PTE_X)) == 0 && level > 0) {
       vmprintwalk((pagetable_t)PTE2PA(pte), level - 1, child_va);
     }

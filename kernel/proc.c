@@ -216,6 +216,7 @@ proc_pagetable(struct proc *p)
   // 映射usyscall页
   if (mappages(pagetable, USYSCALL, PGSIZE,
     (uint64)(p->usyscall), PTE_R | PTE_U) < 0) {
+    uvmunmap(pagetable, USYSCALL, 1, 0);
     uvmunmap(pagetable, TRAPFRAME, 1, 0);
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
     uvmfree(pagetable, 0);
@@ -290,8 +291,8 @@ growproc(int n)
         }
         a += PGSIZE;
       }
-      p->sz = newsz;
     }
+    p->sz = newsz;
   } else if(n < 0){
     //交由uvmdealloc处理
     sz = uvmdealloc(p->pagetable, sz, sz + n);

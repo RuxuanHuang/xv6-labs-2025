@@ -1,0 +1,20 @@
+1. Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+参数放在a0-a7寄存器。main调用printf时，13存在a2寄存器。
+
+2. Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.)
+main的汇编里没有对f和g的调用，因为这两个函数被编译器处理为内联函数。汇编里只出现了：
+  26:	45b1                	li	a1,12
+因为f(8)=g(8)=8+3=11，有f(8)+1=12，故汇编指令中只有将12装入a1。
+
+3. At what address is the function printf located?
+printf地址在0x6f6。
+
+4. What value is in the register ra just after the jalr to printf in main?
+jalr的语义为：跳到目标地址，并把下一条指令的地址存入ra，故ra的值为0x34。
+
+5. What is the output? The output depends on that fact that the RISC-V is little-endian. If the RISC-V were instead big-endian what would you set i to in order to yield the same output? Would you need to change 57616 to a different value?
+输出为：HE110 World
+57616的16进制为E110，所以%x的输出为E110，0x00646c72在risc-v小端序存储中会变成0x726c6400，按照ASCII表对照出来为rld\0。如果risc-v大端序就应当将i设为0x726c6400。57616无需改变，因为是通过寄存器传值不涉及内存。
+
+6. In the following code, what is going to be printed after 'y='? (note: the answer is not a specific value.) Why does this happen?
+一个不可预测的残留值。原因是第二个%d本应该读a2寄存器，但代码调用时未设置。

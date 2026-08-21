@@ -81,8 +81,20 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if (which_dev == 2) {
+    if (p->alarm_interval) {
+      p->passed_ticks++;
+      if (p->passed_ticks >= p->alarm_interval&& !p->alarm_on) {
+        p->alarm_trapframe = *(p->trapframe); //保存陷阱帧
+
+        //把陷阱帧里的返回指令函数替换成警报处理函数地址
+        p->trapframe->epc = p->alarm_handler;
+        p->passed_ticks = 0;
+        p->alarm_on = 1;
+      }
+    }
     yield();
+  }
 
   prepare_return();
 

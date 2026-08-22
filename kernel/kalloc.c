@@ -18,6 +18,18 @@ struct run {
   struct run *next;
 };
 
+//引用计数数组
+int refcount[(PHYSTOP - KERNBASE) / PGSIZE];
+
+static int
+pa2refindex(void* pa) {
+  uint64 p = (uint64)pa;
+  if(p % PGSIZE != 0 || p < KERNBASE || p >= PHYSTOP) {
+    panic("pa2refindex");
+  }
+  return (p - KERNBASE) / PGSIZE;
+}
+
 struct {
   struct spinlock lock;
   struct run *freelist;
@@ -51,6 +63,16 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  //释放时检查页面引用计数，>0则直接返回不释放
+  acquire(&kmem.lock);
+  int index = pa2refindex(pa);
+  refcount[index]--;
+  if (refcount[index]>0) {
+    release(&kmem.lock);
+    return;
+  }
+  release(&kmem.lock);
+
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -72,11 +94,21 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if (r) {
     kmem.freelist = r->next;
+    refcount[pa2refindex(r)] = 1;
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+void
+kref(void* pa)
+{
+  acquire(&kmem.lock);
+  refcount[pa2refindex(pa)]++;
+  release(&kmem.lock);
 }

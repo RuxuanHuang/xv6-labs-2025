@@ -299,7 +299,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -308,18 +307,30 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       continue;   // physical page hasn't been allocated
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    
+    //只有可写的页转为PTE标记
+    //只读页直接共享
+    if (*pte & PTE_W) {
+      //删除写权限并加上COW标记
+      flags = (flags & ~PTE_W) | PTE_COW;
+      *pte = PA2PTE(pa)|flags;
+    }
+    //子进程映射到同一个物理页
+    if (mappages(new, i, PGSIZE, (uint64)pa, flags) != 0) {
       goto err;
     }
+    kref((void*)pa);
   }
   return 0;
 
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+err:
+  for (uint j = 0; j < i; j += PGSIZE) {
+    pte_t* ppte = walk(new, j, 0);
+    if (ppte && (*ppte & PTE_V)) {
+      kfree((void*)PTE2PA(*ppte));
+    }
+  }
+  uvmunmap(new, 0, i / PGSIZE, 0);
   return -1;
 }
 
@@ -349,7 +360,29 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
-  
+
+    //COW页处理逻辑
+    pte = walk(pagetable, va0, 0);
+    if (pte && (*pte & PTE_V) && (*pte & PTE_COW)) {
+      //COW页需要分配新页并复制
+      uint64 oldpa = PTE2PA(*pte);
+      uint flags = PTE_FLAGS(*pte);
+
+      //分配新页
+      char *mem = kalloc();
+      if (mem == 0)
+        return -1;
+
+      //复制旧页内容到新页
+      memmove(mem, (void*)oldpa, PGSIZE);
+
+      //更新页表项，指向分配的新页
+      *pte = PA2PTE((uint64)mem) | (flags & ~PTE_COW) | PTE_W;
+
+      kfree((void*)oldpa);
+      
+    }
+
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0) {
       if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
@@ -458,6 +491,31 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);
+
+  //COW页写错误处理
+  if (!read && ismapped(pagetable, va)) {
+    pte_t* pte = walk(pagetable, va, 0);
+    if (pte && (*pte & PTE_V) && (*pte & PTE_COW)) {
+      //COW页需要分配新页并复制
+      uint64 oldpa = PTE2PA(*pte);
+      uint flags = PTE_FLAGS(*pte);
+
+      //分配新页
+      mem = (uint64)kalloc();
+      if (mem == 0)
+        return 0;
+
+      //复制旧页内容到新页
+      memmove((void*)mem, (void*)oldpa, PGSIZE);
+
+      //更新页表项，指向分配的新页
+      *pte = PA2PTE(mem) | (flags & ~PTE_COW) | PTE_W;
+
+      kfree((void*)oldpa);
+      return mem;
+    }
+  }
+
   if(ismapped(pagetable, va)) {
     return 0;
   }

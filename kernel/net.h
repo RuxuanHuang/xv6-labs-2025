@@ -125,3 +125,27 @@ struct dns_data {
   uint32 ttl;
   uint16 len;
 } __attribute__((packed));
+
+//队列最多保存的包数
+#define UDP_QUEUE_SIZE 16
+
+//UDP数据包
+struct udp_pkt {
+  uint32 src;   //源ip
+  uint16 sport; //源端口
+  char* pkt_buf;   
+  int offset;
+  int len;     
+};
+
+//一个端口的接收队列
+struct udp_queue {
+  int bound;    //是否已经绑定
+  int port;
+  struct udp_pkt pkts[UDP_QUEUE_SIZE];
+  int head;
+  int tail;
+  int count;
+};
+
+#define MAX_PORTS 32

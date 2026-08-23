@@ -18,6 +18,7 @@ static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
 static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
+static struct udp_queue port_queue[MAX_PORTS];
 
 void
 netinit(void)
@@ -25,6 +26,16 @@ netinit(void)
   initlock(&netlock, "netlock");
 }
 
+static struct udp_queue*
+find_queue(int port)
+{
+  for (int i = 0; i < MAX_PORTS; i++) {
+    if (port_queue[i].bound && port_queue[i].port == port) {
+      return &port_queue[i];
+    }
+  }
+  return 0;
+}
 
 //
 // bind(int port)
@@ -34,11 +45,30 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
+  int port;
+  argint(0, &port);
+  acquire(&netlock);
 
-  return -1;
+  //已经绑定过了
+  if (find_queue(port)) {
+    release(&netlock);
+    return -1;
+  }
+
+  //在空闲的队列槽进行绑定
+  for (int i = 0; i < MAX_PORTS; i++) {
+    if (!port_queue[i].bound) {
+      port_queue[i].bound = 1;
+      port_queue[i].head = 0;
+      port_queue[i].tail = 0;
+      port_queue[i].count = 0;
+      port_queue[i].port = port;
+      break;
+    }
+  }
+
+  release(&netlock);
+  return 0;
 }
 
 //
@@ -74,10 +104,57 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
+  int dport;
+  uint64 src_addr;
+  uint64 sport_addr;
+  uint64 buf_addr;
+  int maxlen;
+
+  argint(0, &dport);
+  argaddr(1, &src_addr);
+  argaddr(2, &sport_addr);
+  argaddr(3, &buf_addr);
+  argint(4, &maxlen);
+
+  struct udp_queue* q=find_queue(dport);
+  if (!q) {
+    return -1;
+  }
+  acquire(&netlock);
+
+  //队列没有数据包则等待，有则取第一个
+  while (q->count == 0) {
+    sleep(q, &netlock);
+  }
+  struct udp_pkt* pkt = &q->pkts[q->head];
+
+  int copy_len = pkt->len;
+  if (copy_len > maxlen) {
+    copy_len = maxlen;
+  }
+  struct proc* p = myproc();
+  //将报文源IP复制到src_addr
+  if (copyout(p->pagetable, src_addr, (char*)&pkt->src, sizeof(uint32)) == -1) {
+  release(&netlock);
   return -1;
+}
+  // UDP源端口复制到sport_addr
+  if (copyout(p->pagetable, sport_addr, (char*)&pkt->sport, sizeof(uint16)) == -1) {
+    release(&netlock);
+    return -1;  
+  }
+  // 复制copy_len字节UDP负载到缓冲区buf_addr
+  if (copyout(p->pagetable, buf_addr, pkt->pkt_buf+pkt->offset, copy_len) == -1) {
+    release(&netlock);
+    return -1;
+  }
+
+  kfree(pkt->pkt_buf);
+  q->head = (q->head + 1) % UDP_QUEUE_SIZE;
+  q->count--;
+
+  release(&netlock);
+  return copy_len;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -188,10 +265,53 @@ ip_rx(char *buf, int len)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  //
-  // Your code here.
-  //
-  
+  //检查是否udp协议
+  struct ip* ip_hdr = (struct ip*)(buf + sizeof(struct eth));
+  uint8 p = ip_hdr->ip_p;
+  if (p != IPPROTO_UDP) {
+    kfree(buf);
+    return;
+  }
+  uint32 src_ip = ntohl(ip_hdr->ip_src);
+
+
+  //找到UDP头并转换UDP头部字段字节序
+  struct udp* udp_hdr = (struct udp*)(ip_hdr + 1);
+  uint16 sport = ntohs(udp_hdr->sport);
+  uint16 dport = ntohs(udp_hdr->dport);
+  uint16 ulen = ntohs(udp_hdr->ulen);
+
+  acquire(&netlock);
+
+  struct udp_queue* q = find_queue(dport);
+  if (!q) {
+    kfree(buf);
+    release(&netlock);
+    return;
+  }
+
+  //检查队列是否已满
+  if (q->count >= UDP_QUEUE_SIZE) {
+    release(&netlock);
+    kfree(buf);
+    return;
+  }
+
+  //把数据包放入队列
+  struct udp_pkt* pkt = &q->pkts[q->tail];
+  pkt->src=src_ip;
+  pkt->sport = sport;
+  pkt->pkt_buf = buf;
+  pkt->offset = sizeof(struct eth)+ sizeof(struct ip)+sizeof(struct udp);
+  pkt->len = ulen - sizeof(struct udp);
+
+  //更新队尾指针
+  q->tail = (q->tail + 1) % UDP_QUEUE_SIZE;
+  (q->count)++;
+
+  wakeup(q);
+  release(&netlock);
+
 }
 
 //

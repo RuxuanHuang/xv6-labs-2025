@@ -124,29 +124,52 @@ release(struct spinlock *lk)
 static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  while (1) {
+    if (__atomic_load_n(&rwlk->lock, __ATOMIC_SEQ_CST) < 0 
+      || __atomic_load_n(&rwlk->nwaitwriter, __ATOMIC_SEQ_CST) > 0) {
+      continue;
+    }
+    //确保写者没有拿到锁
+    int old = __atomic_load_n(&rwlk->lock, __ATOMIC_SEQ_CST);
+    if (old < 0)continue;
+    int newval = old + 1;
+    if (__atomic_compare_exchange_n(&rwlk->lock, &old, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+      //再检查一次是否有写者在等
+      if (__atomic_load_n(&rwlk->nwaitwriter, __ATOMIC_SEQ_CST) > 0) {
+        //有则回退
+        __atomic_fetch_sub(&rwlk->lock, 1, __ATOMIC_SEQ_CST);
+        continue;
+      }
+      break;
+    }
+  }
 }
 
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  __atomic_fetch_sub(&rwlk->lock, 1, __ATOMIC_SEQ_CST);
 }
 
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  __atomic_fetch_add(&rwlk->nwaitwriter, 1, __ATOMIC_SEQ_CST);
+  while (1) {
+    int old = 0;
+    //成功把lock从0改为-1，成功
+    if (__atomic_compare_exchange_n(&rwlk->lock, &old, -1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+      break;
+    }
+  }
+  __atomic_fetch_sub(&rwlk->nwaitwriter, 1, __ATOMIC_SEQ_CST);
+  
 }
 
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  __atomic_fetch_add(&rwlk->lock, 1, __ATOMIC_SEQ_CST);
 }
 
 void
@@ -180,8 +203,8 @@ write_release(struct rwspinlock *rwlk)
 void
 initrwlock(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  initlock(&rwlk->l, "rwlk");
+  rwlk->lock = 0;
+  rwlk->nwaitwriter = 0;
 }
 
 // Test rwspinlock implementation.

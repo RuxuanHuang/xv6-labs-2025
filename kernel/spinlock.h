@@ -14,7 +14,10 @@ struct spinlock {
 #ifdef LAB_LOCK
 // Reader-writer lock.
 struct rwspinlock {
-  // Replace this with your implementation.
-  struct spinlock l;
+  //锁状态
+  //-1=写者；0=空闲；>0=读者数
+  int lock;
+
+  int nwaitwriter;  //等待的写者数
 };
 #endif

@@ -328,6 +328,41 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+
+    //处理符号链接
+    if (ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) {
+      char target[MAXPATH];
+
+      for (int i = 0; i < 10; i++) {
+        //将符号链接的目标路径复制到target
+        memset(target, 0, sizeof(target));
+        if (readi(ip, 0, (uint64)target, 0, ip->size) != ip->size) {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        iunlockput(ip);
+
+        //解析目标路径
+        if ((ip = namei(target)) == 0) {
+          end_op();
+          return -1;
+        }
+        ilock(ip);
+        if (ip->type != T_SYMLINK) {
+          break;
+        }
+      }
+      //循环10次后仍未符号链接，说明有环
+      if (ip->type == T_SYMLINK) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
+
+
+    
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -501,5 +536,33 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  char target[DIRSIZ], path[MAXPATH];
+  struct inode* ip;
+
+  if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  //在path创建T_SYMLINK类型文件
+  ip = create(path, T_SYMLINK, 0, 0);
+  if (ip == 0) {
+    end_op();
+    return -1;
+  }
+
+  //将target路径写入符号链接文件
+  if (writei(ip, 0, (uint64)target, 0, strlen(target)) != strlen(target)) {
+    iunlockput(ip);
+    end_op();
+  }
+
+  iunlockput(ip);
+  end_op();
   return 0;
 }

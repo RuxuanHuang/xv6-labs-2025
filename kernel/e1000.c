@@ -100,7 +100,6 @@ e1000_transmit(char *buf, int len)
 
   //判断环形队列溢出
   if (!(tx_ring[tdt].status & E1000_TXD_STAT_DD)) {
-    kfree(buf);
     release(&e1000_lock);
     printf("e1000_transmit:ring full,tdt=%d\n", tdt);
     return -1;

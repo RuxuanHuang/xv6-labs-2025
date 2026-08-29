@@ -353,7 +353,7 @@ sys_open(void)
           break;
         }
       }
-      //循环10次后仍未符号链接，说明有环
+      //循环10次后仍为符号链接，说明有环
       if (ip->type == T_SYMLINK) {
         iunlockput(ip);
         end_op();
@@ -557,10 +557,7 @@ sys_symlink(void)
   }
 
   //将target路径写入符号链接文件
-  if (writei(ip, 0, (uint64)target, 0, strlen(target)) != strlen(target)) {
-    iunlockput(ip);
-    end_op();
-  }
+  writei(ip, 0, (uint64)target, 0, strlen(target));
 
   iunlockput(ip);
   end_op();

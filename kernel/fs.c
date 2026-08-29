@@ -453,7 +453,7 @@ bmap(struct inode *ip, uint bn)
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
 
-    //算出二级间接块和一级间接块索引
+    //算出一级间接块索引和数据块索引
     uint index1 = bn / NINDIRECT;
     uint index2 = bn % NINDIRECT;
 

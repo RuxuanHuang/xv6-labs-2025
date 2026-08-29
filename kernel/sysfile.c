@@ -15,6 +15,8 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
+
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -501,5 +503,161 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_mmap(void) {
+  uint64 addr;
+  int len;
+  int prot;
+  int flags;
+  int fd;
+  struct file* f;
+  struct proc* p = myproc();
+  struct vma* vma;;
+
+  argaddr(0, &addr);
+  argint(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+
+  if (addr != 0 || len == 0)
+    return 0xffffffffffffffff;
+  if (fd < 0 || fd >= NOFILE || (f = p->ofile[fd]) == 0)
+    return 0xffffffffffffffff;
+  if ((prot & PROT_READ) && (f->readable == 0))
+    return 0xffffffffffffffff;
+  if ((prot & PROT_WRITE) && (flags & MAP_SHARED) && (f->writable == 0))
+    return 0xffffffffffffffff;
+
+  //获得一个空闲槽位
+  int vma_index = -1;
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vma[i].used == 0) {
+      vma_index = i;
+      break;
+    }
+  }
+  if (vma_index == -1) {
+    return 0xffffffffffffffff;
+  }
+
+  //在进程地址空间找到一块空闲虚拟区间
+  uint64 candidate = 0x40000000;
+  int ok;
+  do {
+    ok = 1;
+    for (int i = 0; i < NVMA; i++) {
+      if (p->vma[i].used) {
+        uint64 vma_start = p->vma[i].addr;
+        uint64 vma_end = vma_start + p->vma[i].len;
+        uint64 c_end = candidate + len;
+        if (!(c_end <= vma_start || candidate >= vma_end)) {
+          candidate = PGROUNDUP(vma_end+1);
+          ok = 0;
+          break;
+        }
+      }
+    }
+  } while (!ok);
+
+  vma = &p->vma[vma_index];
+  vma->used = 1;
+  vma->addr = candidate;
+  vma->len = len;
+  vma->prot = prot;
+  vma->flags = flags;
+  vma->f = filedup(f);
+  vma->offset = 0;
+
+  return vma->addr;
+}
+
+
+
+uint64
+sys_munmap(void) {
+  uint64 addr;
+  int len;
+  struct proc* p = myproc();
+  struct vma* v = 0;
+
+  argaddr(0, &addr);
+  argint(1, &len);
+
+  //找到addr所属的vma
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vma[i].used && addr >= p->vma[i].addr && addr < p->vma[i].addr + p->vma[i].len) {
+      v = &p->vma[i];
+      break;
+    }
+  }
+  if (v == 0)  //没有对应映射
+    return -1;
+
+  uint64 start = addr;
+  uint64 end = addr + len;
+  if (end > v->addr + v->len) {
+    end = v->addr + v->len;
+  }
+
+  uint64 page_start = PGROUNDDOWN(start);
+  uint64 page_end = PGROUNDUP(end);
+
+  pte_t* pte;
+
+  //如果MAP_SHARED，将修改写回文件
+  if (v->flags & MAP_SHARED) {
+    for (uint64 va = page_start; va < page_end; va += PGSIZE) {
+      if ((pte = walk(p->pagetable, va, 0)) == 0) 
+        continue;
+      if ((*pte & PTE_V) == 0)  
+        continue;
+
+      uint64 pa = PTE2PA(*pte);
+      uint64 fileoff = va - v->addr+v->offset;
+      begin_op();
+      ilock(v->f->ip);
+      int filesz = v->f->ip->size;
+      int bytes = PGSIZE;
+      if (fileoff + bytes > filesz)
+        bytes = filesz - fileoff;
+      if (bytes > 0) {
+        writei(v->f->ip, 0, pa, fileoff, bytes);
+      }
+      iunlock(v->f->ip);
+      end_op();
+    }
+  }
+
+  //释放物理内存
+  for (uint64 va = page_start; va < page_end; va += PGSIZE) {
+    pte = walk(p->pagetable, va, 0);
+    if ((*pte & PTE_V) == 0)
+      continue;
+    uint64 pa = PTE2PA(*pte);
+    kfree((void*)pa);
+    *pte = 0;
+  }
+
+  //更新或释放VMA
+  if (start == v->addr && end == v->addr + v->len) {
+    //解除整个区域
+    fileclose(v->f);  //关闭文件并减少引用计数
+    v->used = 0;
+  }
+  else if (start == v->addr) {
+    //从开头解除
+    v->offset += page_end - v->addr;
+    v->len = v->addr + v->len - page_end;
+    v->addr = page_end;
+  }
+  else {
+    //从结尾解除
+    v->len = page_start - v->addr;
+  }
+
   return 0;
 }

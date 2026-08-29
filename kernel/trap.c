@@ -5,6 +5,14 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+
+
+
+
 
 struct spinlock tickslock;
 uint ticks;
@@ -71,7 +79,75 @@ usertrap(void)
   } else if((r_scause() == 15 || r_scause() == 13) &&
             vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
     // page fault on lazily-allocated page
-  } else {
+  }
+  else if(r_scause() == 15 || r_scause() == 13) {
+    uint64 va = r_stval();  //发生缺页的虚拟地址
+    struct vma* v = 0;
+    //查找落在哪个vma
+    for (int i = 0; i < NVMA; i++) {
+      if (p->vma[i].used && va >= p->vma[i].addr
+        && va < p->vma[i].addr + p->vma[i].len) {
+        v = &p->vma[i];
+        break;
+      }
+    }
+
+    if (v == 0) {
+      printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+      setkilled(p);
+    }
+    else {
+      pte_t* existing_pte = walk(p->pagetable, va, 0);
+      if (existing_pte && (*existing_pte & PTE_V)) {
+        printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
+        printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+        setkilled(p);
+      }
+      else {
+        uint64 ka = (uint64)kalloc(); //分配物理内存
+        if (ka == 0) {
+          setkilled(p);
+        }
+        else {
+          memset((void*)ka, 0, PGSIZE);
+          uint64 offset = va - v->addr;
+          uint64 fileoff = offset + v->offset;
+
+          //用readi读取文件内容到物理页
+          struct inode* ip = v->f->ip;
+          ilock(ip);
+          int filesz = ip->size;
+          int to_read = PGSIZE;
+          if (offset + to_read > v->len) {
+            to_read = v->len - offset;
+          }
+          if (fileoff + to_read > filesz) {
+            to_read = filesz - fileoff;
+          }
+          if (to_read > 0) {
+            readi(ip, 0, ka, fileoff, to_read);
+          }
+          iunlock(ip);
+
+          //设置权限
+          int perm = PTE_U;
+          if (v->prot & PROT_READ)
+            perm |= PTE_R;
+          if (v->prot & PROT_WRITE)
+            perm |= PTE_W;
+
+          //将物理页映射到用户虚拟地址
+          if (mappages(p->pagetable, va, PGSIZE, ka, perm) != 0) {
+            kfree((void*)ka);
+            setkilled(p);
+          }
+        }
+      }
+      
+    }
+  }
+  else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
     setkilled(p);

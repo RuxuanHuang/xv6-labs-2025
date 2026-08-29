@@ -5,6 +5,14 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+
+
+#include "stat.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+
 
 struct cpu cpus[NCPU];
 
@@ -146,6 +154,10 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  for (int i = 0; i < NVMA; i++) {
+    p->vma[i].used = 0;
+  }
+
   return p;
 }
 
@@ -158,6 +170,7 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -273,6 +286,21 @@ kfork(void)
   }
   np->sz = p->sz;
 
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vma[i].used) {
+      np->vma[i].used = 1;
+      np->vma[i].addr = p->vma[i].addr;
+      np->vma[i].len = p->vma[i].len;
+      np->vma[i].prot = p->vma[i].prot;
+      np->vma[i].flags = p->vma[i].flags;
+      np->vma[i].offset = p->vma[i].offset;
+      np->vma[i].f = filedup(p->vma[i].f);
+    }
+    else {
+      np->vma[i].used = 0;
+    }
+  }
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -334,6 +362,49 @@ kexit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+  for (int i = 0; i < NVMA; i++) {
+    struct vma* v = &p->vma[i];
+    if (!v->used)
+      continue;
+
+    uint64 page_start = PGROUNDDOWN(v->addr);
+    uint64 page_end = PGROUNDUP(v->addr + v->len);
+    pte_t* pte;
+    //如果MAP_SHARED，将修改写回文件
+    if (v->flags & MAP_SHARED) {
+      for (uint64 va = page_start; va < page_end; va += PGSIZE) {
+        if ((pte = walk(p->pagetable, va, 0)) == 0)
+          continue;
+        if ((*pte & PTE_V) == 0)
+          continue;
+
+        uint64 pa = PTE2PA(*pte);
+        uint64 fileoff = va - v->addr+v->offset;
+
+        begin_op();
+        ilock(v->f->ip);
+        int filesz = v->f->ip->size;
+        int bytes = PGSIZE;
+        if (fileoff + bytes > filesz)
+          bytes = filesz - fileoff;
+        if (bytes > 0)
+          writei(v->f->ip, 0, pa, fileoff, bytes);
+        iunlock(v->f->ip);
+        end_op();
+      }
+      fileclose(v->f);  //关闭文件并减少引用计数
+      v->used = 0;
+    }
+    //释放物理内存
+    for (uint64 va = page_start; va < page_end; va += PGSIZE) {
+      pte = walk(p->pagetable, va, 0);
+      if ((*pte & PTE_V) == 0)
+        continue;
+      uint64 pa = PTE2PA(*pte);
+      kfree((void*)pa);
+      *pte = 0;
     }
   }
 

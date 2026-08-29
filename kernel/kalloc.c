@@ -26,10 +26,8 @@ struct {
 void
 kinit()
 {
-  char lockname[10];
   for (int i = 0; i < NCPU; i++) {
-    snprintf(lockname, sizeof(lockname), "kmem%d",i);
-    initlock(&kmem[i].lock, lockname);
+    initlock(&kmem[i].lock, "kmem");
   }
   freerange(end, (void*)PHYSTOP);
 }
@@ -91,14 +89,25 @@ kalloc(void)
   //自己空闲链表为空，去别的CPU偷页
   if (r == 0) {
     for (int i = 0; i < NCPU; i++) {
-      if (i == cpu) {
-        continue;
-      }
+      if (i == cpu) continue;
       acquire(&kmem[i].lock);
-      r = kmem[i].freelist;
-      //偷到了，偷完直接退出循环
-      if (r) {
-        kmem[i].freelist = r->next;
+      if (kmem[i].freelist) {
+        r = kmem[i].freelist; //先偷第一页
+        if (r->next) {
+          //给对方留第二页
+          kmem[i].freelist = r->next;
+          struct run* rest = r->next->next;
+          r->next->next = 0;
+
+          //还有剩余的全部偷走
+          if (rest) {
+            kmem[cpu].freelist = rest;
+          }
+        }
+        else {
+          kmem[i].freelist = 0; //  只有一页，全偷
+        }
+        r->next = 0;
         release(&kmem[i].lock);
         break;
       }
